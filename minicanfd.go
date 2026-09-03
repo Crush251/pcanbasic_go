@@ -54,17 +54,21 @@ type MiniCANFDDeviceInfo struct {
 
 // LookupMiniCANFDDevices loads the vendor library and returns all scanned
 // adapter indices. Device metadata is read when the vendor API provides it.
-func LookupMiniCANFDDevices(libraryPath string) ([]MiniCANFDDeviceInfo, error) {
+func LookupMiniCANFDDevices(libraryPath string) (devices []MiniCANFDDeviceInfo, err error) {
 	lib, release, err := acquireMiniCANFDLibrary(libraryPath)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = release() }()
+	defer func() {
+		if releaseErr := release(); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
+	}()
 	count := lib.scanDevice()
 	if count < 0 {
 		return nil, fmt.Errorf("MiniCANFD CAN_ScanDevice failed with status %d", count)
 	}
-	devices := make([]MiniCANFDDeviceInfo, 0, count)
+	devices = make([]MiniCANFDDeviceInfo, 0, count)
 	for index := int32(0); index < count; index++ {
 		info := MiniCANFDDeviceInfo{Index: int(index)}
 		if err := lib.readDeviceInfo(uint(index), &info); err != nil {
