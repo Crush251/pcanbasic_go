@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-03
+
+### Added
+
+- MiniCANFD 厂商动态库后端：支持 Linux `libcanbus.so` /
+  `libcanbus_arm64.so` 与 Windows amd64 `HCanbus.dll`，提供
+  `LookupMiniCANFDDevices` / `OpenMiniCANFD`。
+- MiniCANFD 设备发现、CAN/CAN FD 帧收发、过滤器和状态重置，并映射 FD、BRS、扩展帧与
+  RTR 等标志。
+
+### Changed
+
+- MiniCANFD 动态库按路径在进程内共享引用；首次打开时调用可用的
+  `LibCANbus_Init`，最后一个总线关闭时调用 `LibCANbus_Exit`。
+- MiniCANFD 打开失败会回滚已完成的初始化；`Bus.Close` 会释放通道和动态库引用，并传播
+  厂商清理错误。
+- 应用重连 MiniCANFD 时应完整关闭旧 `Bus`，再重新调用
+  `LookupMiniCANFDDevices` / `OpenMiniCANFD`；不要重复调用 `CAN_OpenDevice` 代替重连。
+
 ## [1.0.0] - 2026-07-24
 
 ### Fixed
@@ -105,6 +124,7 @@
 - 测试覆盖率 80%+，`-race` 通过
 - GitHub Actions：Linux runner 跑 vet + golangci-lint + race test + 跨平台编译（windows/amd64+386）；Windows runner 跑 vet + 普通 test
 
-[Unreleased]: https://github.com/zhuzx17/gocan/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/zhuzx17/gocan/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/zhuzx17/gocan/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/zhuzx17/gocan/releases/tag/v1.0.0
 [0.1.0]: https://github.com/zhuzx17/gocan/releases/tag/v0.1.0
