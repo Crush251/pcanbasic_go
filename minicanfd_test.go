@@ -3,6 +3,7 @@ package gocan
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 )
 
@@ -33,12 +34,27 @@ func TestMiniCANFDFrameConversion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.DLC != 9 || msg.ExternFlag != 1 || msg.FrameType != MiniCANFDDefaultFrameType {
+	if msg.DLC != 9 || msg.ExternFlag != 1 || msg.FrameType != 0x0c {
 		t.Fatalf("unexpected vendor frame: %+v", msg)
 	}
 	out, err := frameFromMiniCANFDMsg(msg)
-	if err != nil || out.ID != in.ID || string(out.Data) != string(in.Data) || !out.Has(FlagExtended) || !out.Has(FlagFD) {
+	if err != nil || out.ID != in.ID || string(out.Data) != string(in.Data) || !out.Has(FlagExtended) || !out.Has(FlagFD) || !out.Has(FlagBRS) {
 		t.Fatalf("round trip failed: frame=%+v err=%v", out, err)
+	}
+}
+
+func TestMiniCANFDFrameConversionClassicalAndBRS(t *testing.T) {
+	msg, err := miniCANFDFrameFromFrame(Frame{ID: 1, Data: []byte{1, 2}, Flags: FlagFD}, MiniCANFDDefaultFrameType)
+	if err != nil || msg.FrameType != 0x04 {
+		t.Fatalf("FD frame type = 0x%02x, err=%v", msg.FrameType, err)
+	}
+	msg, err = miniCANFDFrameFromFrame(Frame{ID: 1, Data: []byte{1, 2}, Flags: FlagFD | FlagBRS}, MiniCANFDDefaultFrameType)
+	if err != nil || msg.FrameType != 0x0c {
+		t.Fatalf("BRS frame type = 0x%02x, err=%v", msg.FrameType, err)
+	}
+	msg, err = miniCANFDFrameFromFrame(Frame{ID: 1, Data: []byte{1, 2}}, MiniCANFDDefaultFrameType)
+	if err != nil || msg.FrameType != 0 {
+		t.Fatalf("classical frame type = 0x%02x, err=%v", msg.FrameType, err)
 	}
 }
 
@@ -73,5 +89,59 @@ func TestMiniCANFDBackendLifecycle(t *testing.T) {
 	}
 	if !errors.Is(b.minicanfd.send(Frame{Flags: FlagFD}), ErrBusClosed) {
 		t.Fatal("send after close should fail")
+	}
+}
+
+func TestMiniCANFDResetRestoresReceiveFilter(t *testing.T) {
+	var resetCalls, filterCalls int
+	lib := &miniCANFDLib{
+		reset: func(_, _ uint32) int32 { resetCalls++; return 0 },
+		setFilter: func(_ uint32, _ uint32, number, typ int8, id, mask uint32, enable int8) int32 {
+			if number != 0 || typ != 1 || id != 0 || mask != 0 || enable != 1 {
+				t.Fatalf("unexpected filter: number=%d type=%d id=%d mask=%d enable=%d", number, typ, id, mask, enable)
+			}
+			filterCalls++
+			return 0
+		},
+		closeDevice: func(_, _ uint32) int32 { return 0 },
+	}
+	b := &Bus{minicanfd: &miniCANFDBackend{lib: lib}, isFD: true}
+	if err := b.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if resetCalls != 1 || filterCalls != 1 {
+		t.Fatalf("reset calls = %d, filter calls = %d; want 1/1", resetCalls, filterCalls)
+	}
+}
+
+func TestMiniCANFDRuntimeReferenceCounting(t *testing.T) {
+	var exits atomic.Int32
+	key := "test-runtime-reference-counting"
+	runtime := &miniCANFDRuntime{
+		lib:         &miniCANFDLib{runtimeExit: func() int32 { exits.Add(1); return 0 }},
+		refs:        2,
+		initialized: true,
+	}
+	miniCANFDRuntimes.Lock()
+	miniCANFDRuntimes.byPath[key] = runtime
+	miniCANFDRuntimes.Unlock()
+	if err := releaseMiniCANFDRuntime(key, runtime); err != nil {
+		t.Fatalf("first runtime release failed: %v", err)
+	}
+	if got := exits.Load(); got != 0 {
+		t.Fatalf("runtime exit after first release = %d, want 0", got)
+	}
+	if err := releaseMiniCANFDRuntime(key, runtime); err != nil {
+		t.Fatalf("final runtime release failed: %v", err)
+	}
+	if got := exits.Load(); got != 1 {
+		t.Fatalf("runtime exit after final release = %d, want 1", got)
+	}
+	// A duplicate release is harmless and must not call the vendor again.
+	if err := releaseMiniCANFDRuntime(key, runtime); err != nil {
+		t.Fatalf("duplicate runtime release failed: %v", err)
+	}
+	if got := exits.Load(); got != 1 {
+		t.Fatalf("runtime exit after duplicate release = %d, want 1", got)
 	}
 }

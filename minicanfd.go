@@ -1,6 +1,7 @@
 package gocan
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,14 +11,15 @@ import (
 
 const (
 	// MiniCANFDConfig holds the vendor adapter initialization parameters.
-	MiniCANFDDefaultNominalBitrate = 1_000_000
-	MiniCANFDDefaultDataBitrate    = 5_000_000
-	MiniCANFDDefaultConfig         = 0x07
-	MiniCANFDDefaultModel          = 0
-	MiniCANFDDefaultCANType        = 1
-	MiniCANFDDefaultFrameType      = 0x04
-	MiniCANFDMaxDataLength         = 64
-	MiniCANFDDefaultReceiveTimeout = 10 * time.Millisecond
+	MiniCANFDDefaultNominalBitrate  = 1_000_000
+	MiniCANFDDefaultDataBitrate     = 5_000_000
+	MiniCANFDDefaultConfig          = 0x07
+	MiniCANFDDefaultModel           = 0
+	MiniCANFDDefaultCANType         = 1
+	MiniCANFDDefaultFrameType       = 0x04
+	MiniCANFDMaxDataLength          = 64
+	MiniCANFDDefaultTransmitTimeout = 100 * time.Millisecond
+	MiniCANFDDefaultReceiveTimeout  = 100 * time.Millisecond
 )
 
 // MiniCANFDConfig describes one channel of a MiniCANFD vendor adapter.
@@ -52,16 +54,21 @@ type MiniCANFDDeviceInfo struct {
 
 // LookupMiniCANFDDevices loads the vendor library and returns all scanned
 // adapter indices. Device metadata is read when the vendor API provides it.
-func LookupMiniCANFDDevices(libraryPath string) ([]MiniCANFDDeviceInfo, error) {
-	lib, err := loadMiniCANFDLibrary(libraryPath)
+func LookupMiniCANFDDevices(libraryPath string) (devices []MiniCANFDDeviceInfo, err error) {
+	lib, release, err := acquireMiniCANFDLibrary(libraryPath)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if releaseErr := release(); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
+	}()
 	count := lib.scanDevice()
 	if count < 0 {
 		return nil, fmt.Errorf("MiniCANFD CAN_ScanDevice failed with status %d", count)
 	}
-	devices := make([]MiniCANFDDeviceInfo, 0, count)
+	devices = make([]MiniCANFDDeviceInfo, 0, count)
 	for index := int32(0); index < count; index++ {
 		info := MiniCANFDDeviceInfo{Index: int(index)}
 		if err := lib.readDeviceInfo(uint(index), &info); err != nil {
@@ -102,18 +109,21 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 	if cfg.FrameType == 0 {
 		cfg.FrameType = MiniCANFDDefaultFrameType
 	}
-	lib, err := loadMiniCANFDLibrary(cfg.LibraryPath)
+	lib, release, err := acquireMiniCANFDLibrary(cfg.LibraryPath)
 	if err != nil {
 		return nil, err
 	}
 	count := lib.scanDevice()
 	if count < 0 {
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD CAN_ScanDevice failed with status %d", count)
 	}
 	if int32(cfg.DeviceIndex) >= count {
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD device index %d out of range (found %d): %w", cfg.DeviceIndex, count, ErrIllParamValue)
 	}
 	if status := lib.openDevice(uint32(cfg.DeviceIndex), uint32(cfg.ChannelIndex)); status != 0 {
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD CAN_OpenDevice failed with status %d", status)
 	}
 	opened := true
@@ -128,6 +138,7 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 	}
 	if status := lib.initFD(uint32(cfg.DeviceIndex), uint32(cfg.ChannelIndex), &vendorCfg); status != 0 {
 		cleanup()
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD CANFD_Init failed with status %d", status)
 	}
 
@@ -139,6 +150,7 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 	}
 	if busCfg.receiveMode == ModeEvent {
 		_ = lib.closeDevice(uint32(cfg.DeviceIndex), uint32(cfg.ChannelIndex))
+		_ = release()
 		return nil, fmt.Errorf("open MiniCANFD: event receive mode: %w", ErrNotSupported)
 	}
 	bus := &Bus{
@@ -150,7 +162,7 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 		errCh:   make(chan error, busCfg.errBufferSize),
 		closing: make(chan struct{}),
 	}
-	bus.minicanfd = &miniCANFDBackend{lib: lib, device: uint32(cfg.DeviceIndex), channel: uint32(cfg.ChannelIndex), frameType: cfg.FrameType}
+	bus.minicanfd = &miniCANFDBackend{lib: lib, device: uint32(cfg.DeviceIndex), channel: uint32(cfg.ChannelIndex), frameType: cfg.FrameType, release: release}
 	opened = false
 	bus.startReader()
 	return bus, nil
@@ -165,6 +177,7 @@ type miniCANFDBackend struct {
 	device    uint32
 	channel   uint32
 	frameType uint8
+	release   func() error
 	closed    bool
 }
 
@@ -178,7 +191,7 @@ func (m *miniCANFDBackend) send(frame Frame) error {
 	if err != nil {
 		return err
 	}
-	if status := m.lib.transmit(m.device, m.channel, &msg, 1, 10); status <= 0 {
+	if status := m.lib.transmit(m.device, m.channel, &msg, 1, int32(MiniCANFDDefaultTransmitTimeout/time.Millisecond)); status <= 0 {
 		return fmt.Errorf("MiniCANFD CANFD_Transmit failed with status %d", status)
 	}
 	return nil
@@ -210,10 +223,40 @@ func (m *miniCANFDBackend) close() error {
 		return nil
 	}
 	status := m.lib.closeDevice(m.device, m.channel)
+	var releaseErr error
+	if m.release != nil {
+		releaseErr = m.release()
+		m.release = nil
+	}
 	if status != 0 {
-		return fmt.Errorf("MiniCANFD CAN_CloseDevice failed with status %d", status)
+		m.closed = true
+		return errors.Join(fmt.Errorf("MiniCANFD CAN_CloseDevice failed with status %d", status), releaseErr)
 	}
 	m.closed = true
+	return releaseErr
+}
+
+func (m *miniCANFDBackend) reset() error {
+	m.txMu.Lock()
+	defer m.txMu.Unlock()
+	m.rxMu.Lock()
+	defer m.rxMu.Unlock()
+	if m.closed {
+		return ErrBusClosed
+	}
+	if m.lib.reset == nil {
+		return ErrNotSupported
+	}
+	if status := m.lib.reset(m.device, m.channel); status != 0 {
+		return fmt.Errorf("MiniCANFD CAN_Reset failed with status %d", status)
+	}
+	// CAN_Reset clears vendor filters. Restore the documented default
+	// receive-all filter when the SDK exposes CAN_SetFilter.
+	if m.lib.setFilter != nil {
+		if status := m.lib.setFilter(m.device, m.channel, 0, 1, 0, 0, 1); status != 0 {
+			return fmt.Errorf("MiniCANFD CAN_SetFilter failed with status %d", status)
+		}
+	}
 	return nil
 }
 
@@ -263,6 +306,10 @@ type miniCANFDLib struct {
 	initFD      func(uint32, uint32, *miniCANFDConfig) int32
 	transmit    func(uint32, uint32, *miniCANFDMsg, uint32, int32) int32
 	receive     func(uint32, uint32, *miniCANFDMsg, uint32, int32) int32
+	reset       func(uint32, uint32) int32
+	setFilter   func(uint32, uint32, int8, int8, uint32, uint32, int8) int32
+	runtimeInit func() int32
+	runtimeExit func() int32
 }
 
 func (m *miniCANFDLib) readDeviceInfo(index uint, info *MiniCANFDDeviceInfo) error {
@@ -295,10 +342,10 @@ func bytesIndexByte(value []byte, needle byte) int {
 }
 
 func miniCANFDFrameFromFrame(frame Frame, defaultFrameType uint8) (miniCANFDMsg, error) {
-	if !frame.Has(FlagFD) {
-		return miniCANFDMsg{}, fmt.Errorf("MiniCANFD requires CAN FD frame: %w", ErrFDNotSupportedOnBus)
+	if !frame.Has(FlagFD) && len(frame.Data) > 8 {
+		return miniCANFDMsg{}, ErrDataTooLong
 	}
-	if frame.Has(FlagRemote) {
+	if frame.Has(FlagFD) && frame.Has(FlagRemote) {
 		return miniCANFDMsg{}, ErrRemoteOnFD
 	}
 	if len(frame.Data) > MiniCANFDMaxDataLength {
@@ -308,11 +355,14 @@ func miniCANFDFrameFromFrame(frame Frame, defaultFrameType uint8) (miniCANFDMsg,
 	if !ok {
 		return miniCANFDMsg{}, ErrInvalidFDLength
 	}
-	msg := miniCANFDMsg{ID: frame.ID, FrameType: defaultFrameType, DLC: dlc, ExternFlag: boolByte(frame.Has(FlagExtended))}
-	if frame.Has(FlagBRS) {
-		// Vendor FrameType is firmware-defined; retain the configured value.
-		msg.FrameType = defaultFrameType
+	frameType := defaultFrameType &^ 0x0c
+	if frame.Has(FlagFD) {
+		frameType |= 0x04
+		if frame.Has(FlagBRS) {
+			frameType |= 0x08
+		}
 	}
+	msg := miniCANFDMsg{ID: frame.ID, FrameType: frameType, DLC: dlc, ExternFlag: boolByte(frame.Has(FlagExtended)), RemoteFlag: boolByte(frame.Has(FlagRemote))}
 	copy(msg.Data[:], frame.Data)
 	return msg, nil
 }
@@ -322,9 +372,18 @@ func frameFromMiniCANFDMsg(msg miniCANFDMsg) (Frame, error) {
 	if !ok || length > len(msg.Data) {
 		return Frame{}, ErrInvalidFDLength
 	}
-	flags := FlagFD
+	var flags FrameFlags
+	if msg.FrameType&0x04 != 0 {
+		flags |= FlagFD
+	}
+	if msg.FrameType&0x08 != 0 {
+		flags |= FlagBRS
+	}
 	if msg.ExternFlag != 0 {
 		flags |= FlagExtended
+	}
+	if msg.RemoteFlag != 0 {
+		flags |= FlagRemote
 	}
 	return Frame{ID: msg.ID, Data: append([]byte(nil), msg.Data[:length]...), Flags: flags, TimestampMicros: uint64(msg.TimeStamp), ReceivedAt: time.Now()}, nil
 }
@@ -371,14 +430,78 @@ func miniCANFDDLCToLength(dlc uint8) (int, bool) {
 	return lengths[dlc-9], true
 }
 
-func loadMiniCANFDLibrary(path string) (*miniCANFDLib, error) {
+type miniCANFDRuntime struct {
+	lib         *miniCANFDLib
+	refs        int
+	initialized bool
+	exited      bool
+}
+
+var miniCANFDRuntimes = struct {
+	sync.Mutex
+	byPath map[string]*miniCANFDRuntime
+}{byPath: make(map[string]*miniCANFDRuntime)}
+
+var miniCANFDLoadMu sync.Mutex
+
+func acquireMiniCANFDLibrary(path string) (*miniCANFDLib, func() error, error) {
+	miniCANFDLoadMu.Lock()
+	defer miniCANFDLoadMu.Unlock()
+	key := path
+	miniCANFDRuntimes.Lock()
+	if runtime := miniCANFDRuntimes.byPath[key]; runtime != nil {
+		runtime.refs++
+		miniCANFDRuntimes.Unlock()
+		return runtime.lib, func() error { return releaseMiniCANFDRuntime(key, runtime) }, nil
+	}
+	miniCANFDRuntimes.Unlock()
+
 	handle, err := miniCANFDDlopen(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lib := &miniCANFDLib{}
 	if err := registerMiniCANFDFuncs(handle, lib); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return lib, nil
+	runtime := &miniCANFDRuntime{lib: lib, refs: 1}
+	if lib.runtimeInit != nil {
+		if status := lib.runtimeInit(); status != 0 {
+			return nil, nil, fmt.Errorf("MiniCANFD LibCANbus_Init failed with status %d", status)
+		}
+		runtime.initialized = true
+	}
+	miniCANFDRuntimes.Lock()
+	if existing := miniCANFDRuntimes.byPath[key]; existing != nil {
+		existing.refs++
+		miniCANFDRuntimes.Unlock()
+		if runtime.initialized && runtime.lib.runtimeExit != nil {
+			_ = runtime.lib.runtimeExit()
+		}
+		return existing.lib, func() error { return releaseMiniCANFDRuntime(key, existing) }, nil
+	}
+	miniCANFDRuntimes.byPath[key] = runtime
+	miniCANFDRuntimes.Unlock()
+	return lib, func() error { return releaseMiniCANFDRuntime(key, runtime) }, nil
+}
+
+func releaseMiniCANFDRuntime(key string, runtime *miniCANFDRuntime) error {
+	miniCANFDLoadMu.Lock()
+	defer miniCANFDLoadMu.Unlock()
+	miniCANFDRuntimes.Lock()
+	if runtime.refs > 0 {
+		runtime.refs--
+	}
+	last := runtime.refs == 0 && !runtime.exited
+	if last {
+		runtime.exited = true
+		delete(miniCANFDRuntimes.byPath, key)
+	}
+	miniCANFDRuntimes.Unlock()
+	if last && runtime.initialized && runtime.lib.runtimeExit != nil {
+		if status := runtime.lib.runtimeExit(); status != 0 {
+			return fmt.Errorf("MiniCANFD LibCANbus_Exit failed with status %d", status)
+		}
+	}
+	return nil
 }

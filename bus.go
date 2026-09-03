@@ -219,7 +219,7 @@ func (b *Bus) Reset() error {
 		return b.slcan.reset()
 	}
 	if b.minicanfd != nil {
-		return ErrNotSupported
+		return b.minicanfd.reset()
 	}
 	if s := b.adapt.Reset(b.ch); s != raw.PCAN_ERROR_OK {
 		return wrapStatus(b.adapt, "CAN_Reset", s)
