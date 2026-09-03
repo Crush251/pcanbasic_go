@@ -480,6 +480,8 @@ func acquireMiniCANFDLibrary(path string) (*miniCANFDLib, func(), error) {
 }
 
 func releaseMiniCANFDRuntime(key string, runtime *miniCANFDRuntime) {
+	miniCANFDLoadMu.Lock()
+	defer miniCANFDLoadMu.Unlock()
 	miniCANFDRuntimes.Lock()
 	if runtime.refs > 0 {
 		runtime.refs--
