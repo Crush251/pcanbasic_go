@@ -11,6 +11,12 @@ import (
 )
 
 func miniCANFDDlopen(path string) (uintptr, error) {
+	// Some vendor builds reference libusb symbols without declaring a DT_NEEDED
+	// dependency. Preload libusb into the global namespace before resolving the
+	// vendor object so those symbols are available to the loader.
+	if _, err := purego.Dlopen("libusb-1.0.so.0", purego.RTLD_NOW|purego.RTLD_GLOBAL); err != nil {
+		return 0, fmt.Errorf("load MiniCANFD dependency libusb-1.0.so.0: %w", err)
+	}
 	if path == "" {
 		path = os.Getenv("MINICANFD_LIBRARY_PATH")
 	}
