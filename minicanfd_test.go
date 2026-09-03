@@ -125,16 +125,22 @@ func TestMiniCANFDRuntimeReferenceCounting(t *testing.T) {
 	miniCANFDRuntimes.Lock()
 	miniCANFDRuntimes.byPath[key] = runtime
 	miniCANFDRuntimes.Unlock()
-	releaseMiniCANFDRuntime(key, runtime)
+	if err := releaseMiniCANFDRuntime(key, runtime); err != nil {
+		t.Fatalf("first runtime release failed: %v", err)
+	}
 	if got := exits.Load(); got != 0 {
 		t.Fatalf("runtime exit after first release = %d, want 0", got)
 	}
-	releaseMiniCANFDRuntime(key, runtime)
+	if err := releaseMiniCANFDRuntime(key, runtime); err != nil {
+		t.Fatalf("final runtime release failed: %v", err)
+	}
 	if got := exits.Load(); got != 1 {
 		t.Fatalf("runtime exit after final release = %d, want 1", got)
 	}
 	// A duplicate release is harmless and must not call the vendor again.
-	releaseMiniCANFDRuntime(key, runtime)
+	if err := releaseMiniCANFDRuntime(key, runtime); err != nil {
+		t.Fatalf("duplicate runtime release failed: %v", err)
+	}
 	if got := exits.Load(); got != 1 {
 		t.Fatalf("runtime exit after duplicate release = %d, want 1", got)
 	}
