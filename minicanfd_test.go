@@ -38,7 +38,7 @@ func TestMiniCANFDFrameConversion(t *testing.T) {
 		t.Fatalf("unexpected vendor frame: %+v", msg)
 	}
 	out, err := frameFromMiniCANFDMsg(msg)
-	if err != nil || out.ID != in.ID || string(out.Data) != string(in.Data) || !out.Has(FlagExtended) || !out.Has(FlagFD) {
+	if err != nil || out.ID != in.ID || string(out.Data) != string(in.Data) || !out.Has(FlagExtended) || !out.Has(FlagFD) || !out.Has(FlagBRS) {
 		t.Fatalf("round trip failed: frame=%+v err=%v", out, err)
 	}
 }
