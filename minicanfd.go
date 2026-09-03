@@ -1,6 +1,7 @@
 package gocan
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -58,7 +59,7 @@ func LookupMiniCANFDDevices(libraryPath string) ([]MiniCANFDDeviceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	defer func() { _ = release() }()
 	count := lib.scanDevice()
 	if count < 0 {
 		return nil, fmt.Errorf("MiniCANFD CAN_ScanDevice failed with status %d", count)
@@ -110,15 +111,15 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 	}
 	count := lib.scanDevice()
 	if count < 0 {
-		release()
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD CAN_ScanDevice failed with status %d", count)
 	}
 	if int32(cfg.DeviceIndex) >= count {
-		release()
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD device index %d out of range (found %d): %w", cfg.DeviceIndex, count, ErrIllParamValue)
 	}
 	if status := lib.openDevice(uint32(cfg.DeviceIndex), uint32(cfg.ChannelIndex)); status != 0 {
-		release()
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD CAN_OpenDevice failed with status %d", status)
 	}
 	opened := true
@@ -133,7 +134,7 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 	}
 	if status := lib.initFD(uint32(cfg.DeviceIndex), uint32(cfg.ChannelIndex), &vendorCfg); status != 0 {
 		cleanup()
-		release()
+		_ = release()
 		return nil, fmt.Errorf("MiniCANFD CANFD_Init failed with status %d", status)
 	}
 
@@ -145,7 +146,7 @@ func OpenMiniCANFD(cfg MiniCANFDConfig, opts ...Option) (*Bus, error) {
 	}
 	if busCfg.receiveMode == ModeEvent {
 		_ = lib.closeDevice(uint32(cfg.DeviceIndex), uint32(cfg.ChannelIndex))
-		release()
+		_ = release()
 		return nil, fmt.Errorf("open MiniCANFD: event receive mode: %w", ErrNotSupported)
 	}
 	bus := &Bus{
@@ -172,7 +173,7 @@ type miniCANFDBackend struct {
 	device    uint32
 	channel   uint32
 	frameType uint8
-	release   func()
+	release   func() error
 	closed    bool
 }
 
@@ -218,16 +219,17 @@ func (m *miniCANFDBackend) close() error {
 		return nil
 	}
 	status := m.lib.closeDevice(m.device, m.channel)
+	var releaseErr error
 	if m.release != nil {
-		m.release()
+		releaseErr = m.release()
 		m.release = nil
 	}
 	if status != 0 {
 		m.closed = true
-		return fmt.Errorf("MiniCANFD CAN_CloseDevice failed with status %d", status)
+		return errors.Join(fmt.Errorf("MiniCANFD CAN_CloseDevice failed with status %d", status), releaseErr)
 	}
 	m.closed = true
-	return nil
+	return releaseErr
 }
 
 func (m *miniCANFDBackend) reset() error {
@@ -438,7 +440,7 @@ var miniCANFDRuntimes = struct {
 
 var miniCANFDLoadMu sync.Mutex
 
-func acquireMiniCANFDLibrary(path string) (*miniCANFDLib, func(), error) {
+func acquireMiniCANFDLibrary(path string) (*miniCANFDLib, func() error, error) {
 	miniCANFDLoadMu.Lock()
 	defer miniCANFDLoadMu.Unlock()
 	key := path
@@ -446,7 +448,7 @@ func acquireMiniCANFDLibrary(path string) (*miniCANFDLib, func(), error) {
 	if runtime := miniCANFDRuntimes.byPath[key]; runtime != nil {
 		runtime.refs++
 		miniCANFDRuntimes.Unlock()
-		return runtime.lib, func() { releaseMiniCANFDRuntime(key, runtime) }, nil
+		return runtime.lib, func() error { return releaseMiniCANFDRuntime(key, runtime) }, nil
 	}
 	miniCANFDRuntimes.Unlock()
 
@@ -472,14 +474,14 @@ func acquireMiniCANFDLibrary(path string) (*miniCANFDLib, func(), error) {
 		if runtime.initialized && runtime.lib.runtimeExit != nil {
 			_ = runtime.lib.runtimeExit()
 		}
-		return existing.lib, func() { releaseMiniCANFDRuntime(key, existing) }, nil
+		return existing.lib, func() error { return releaseMiniCANFDRuntime(key, existing) }, nil
 	}
 	miniCANFDRuntimes.byPath[key] = runtime
 	miniCANFDRuntimes.Unlock()
-	return lib, func() { releaseMiniCANFDRuntime(key, runtime) }, nil
+	return lib, func() error { return releaseMiniCANFDRuntime(key, runtime) }, nil
 }
 
-func releaseMiniCANFDRuntime(key string, runtime *miniCANFDRuntime) {
+func releaseMiniCANFDRuntime(key string, runtime *miniCANFDRuntime) error {
 	miniCANFDLoadMu.Lock()
 	defer miniCANFDLoadMu.Unlock()
 	miniCANFDRuntimes.Lock()
@@ -493,6 +495,9 @@ func releaseMiniCANFDRuntime(key string, runtime *miniCANFDRuntime) {
 	}
 	miniCANFDRuntimes.Unlock()
 	if last && runtime.initialized && runtime.lib.runtimeExit != nil {
-		_ = runtime.lib.runtimeExit()
+		if status := runtime.lib.runtimeExit(); status != 0 {
+			return fmt.Errorf("MiniCANFD LibCANbus_Exit failed with status %d", status)
+		}
 	}
+	return nil
 }
