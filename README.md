@@ -155,7 +155,11 @@ bus, err := gocan.OpenSLCANFD(
 
 | 版本 | 主要内容 |
 |---|---|
+| v1.1.0 | MiniCANFD 厂商动态库后端、初始化/退出生命周期、重置与关闭重连契约 |
 | v1.0.0 | 首个稳定版本：PCANBasic、SocketCAN、CANable 2.0 SLCAN-FD、BusGroup、通道发现与跨平台文档 |
+
+发布说明见 [CHANGELOG.md](CHANGELOG.md)。厂商 `.so` / `.dll` 不随 gocan 发布，
+由使用 gocan 的应用按目标平台自行分发。
 
 ---
 
