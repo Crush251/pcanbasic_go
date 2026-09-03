@@ -13,11 +13,12 @@ import (
 //
 // 必须使用 Close 释放资源。Close 是幂等的，可以从多个 goroutine 安全调用。
 type Bus struct {
-	ch    raw.TPCANHandle
-	adapt rawAdapter
-	slcan *slcanBackend
-	cfg   *config
-	isFD  bool
+	ch        raw.TPCANHandle
+	adapt     rawAdapter
+	slcan     *slcanBackend
+	minicanfd *miniCANFDBackend
+	cfg       *config
+	isFD      bool
 
 	// 接收侧。reader goroutine 在阶段 4 引入。
 	rxCh    chan Frame
@@ -157,6 +158,9 @@ func (b *Bus) Send(ctx context.Context, f Frame) error {
 	if b.slcan != nil {
 		return b.slcan.send(f)
 	}
+	if b.minicanfd != nil {
+		return b.minicanfd.send(f)
+	}
 
 	if f.Has(FlagFD) {
 		m := toRawMsgFD(f)
@@ -199,6 +203,9 @@ func (b *Bus) Status() (Status, error) {
 	if b.slcan != nil {
 		return 0, ErrNotSupported
 	}
+	if b.minicanfd != nil {
+		return 0, ErrNotSupported
+	}
 	return Status(b.adapt.GetStatus(b.ch)), nil
 }
 
@@ -210,6 +217,9 @@ func (b *Bus) Reset() error {
 	}
 	if b.slcan != nil {
 		return b.slcan.reset()
+	}
+	if b.minicanfd != nil {
+		return ErrNotSupported
 	}
 	if s := b.adapt.Reset(b.ch); s != raw.PCAN_ERROR_OK {
 		return wrapStatus(b.adapt, "CAN_Reset", s)
@@ -226,6 +236,9 @@ func (b *Bus) SetFilter(idMin, idMax uint32, mode FilterMode) error {
 		return ErrBusClosed
 	}
 	if b.slcan != nil {
+		return ErrNotSupported
+	}
+	if b.minicanfd != nil {
 		return ErrNotSupported
 	}
 	var mt raw.TPCANMessageType
@@ -268,6 +281,13 @@ func (b *Bus) Close() error {
 		if b.slcan != nil {
 			// Closing the port wakes a serial Read that may currently be blocked.
 			err = b.slcan.close()
+			for range b.rxCh {
+			}
+			close(b.errCh)
+			return
+		}
+		if b.minicanfd != nil {
+			err = b.minicanfd.close()
 			for range b.rxCh {
 			}
 			close(b.errCh)

@@ -10,6 +10,9 @@ func (b *Bus) SetErrFilter(mask uint32) error {
 	if b.closed.Load() {
 		return ErrBusClosed
 	}
+	if b.minicanfd != nil {
+		return ErrNotSupported
+	}
 	if s := raw.SetCANRawErrFilter(b.ch, mask); s != raw.PCAN_ERROR_OK {
 		return wrapStatus(b.adapt, "setsockopt(CAN_RAW_ERR_FILTER)", s)
 	}
@@ -21,6 +24,9 @@ func (b *Bus) SetErrFilter(mask uint32) error {
 func (b *Bus) SetJoinFilters(and bool) error {
 	if b.closed.Load() {
 		return ErrBusClosed
+	}
+	if b.minicanfd != nil {
+		return ErrNotSupported
 	}
 	if s := raw.SetCANRawJoinFilters(b.ch, and); s != raw.PCAN_ERROR_OK {
 		return wrapStatus(b.adapt, "setsockopt(CAN_RAW_JOIN_FILTERS)", s)
