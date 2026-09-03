@@ -122,6 +122,12 @@ bus, err := gocan.OpenMiniCANFD(gocan.MiniCANFDConfig{
 库路径也可通过 `MINICANFD_LIBRARY_PATH` 或 `LINKERBOT_CANFD_LIB` 指定。厂商
 二进制不随 gocan 发布包提供，需由应用按目标平台分发。
 
+MiniCANFD 的动态库按路径在进程内共享：首次使用时调用厂商
+`LibCANbus_Init`（旧版库未导出该符号时兼容运行），最后一个总线关闭时调用
+`LibCANbus_Exit`。应用重连应完整执行 `Bus.Close` 后重新调用
+`LookupMiniCANFDDevices` / `OpenMiniCANFD`，不要只重复 `CAN_OpenDevice`。
+`Bus.Reset` 会调用 `CAN_Reset` 并恢复默认接收全部帧的过滤器。
+
 ## CANable 2.0 SLCAN-FD
 
 ```go

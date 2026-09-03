@@ -57,5 +57,13 @@ func registerMiniCANFDFuncs(handle uintptr, lib *miniCANFDLib) (err error) {
 			return err
 		}
 	}
+	registerOptional := func(target any, name string) {
+		defer func() { _ = recover() }()
+		purego.RegisterLibFunc(target, handle, name)
+	}
+	registerOptional(&lib.reset, "CAN_Reset")
+	registerOptional(&lib.setFilter, "CAN_SetFilter")
+	registerOptional(&lib.runtimeInit, "LibCANbus_Init")
+	registerOptional(&lib.runtimeExit, "LibCANbus_Exit")
 	return nil
 }
