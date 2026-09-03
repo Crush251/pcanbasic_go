@@ -86,6 +86,9 @@ func (b *Bus) readOnce() (Frame, error) {
 	if b.slcan != nil {
 		return b.slcan.readFrame()
 	}
+	if b.minicanfd != nil {
+		return b.minicanfd.readFrame()
+	}
 	if b.isFD {
 		return b.readOnceFD()
 	}

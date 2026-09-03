@@ -1,7 +1,7 @@
 # gocan
 
-> Go CAN / CAN FD 多后端库：Windows 支持 PEAK-System PCANBasic 和 CANable 2.0
-> SLCAN-FD，Linux 支持 SocketCAN。
+> Go CAN / CAN FD 多后端库：Windows 支持 PEAK-System PCANBasic、CANable 2.0
+> SLCAN-FD 与 MiniCANFD，Linux 支持 SocketCAN、SLCAN 和 MiniCANFD。
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/zhuzx17/gocan.svg)](https://pkg.go.dev/github.com/zhuzx17/gocan)
 [![CI](https://github.com/zhuzx17/gocan/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zhuzx17/gocan/actions/workflows/ci.yml)
@@ -10,8 +10,8 @@
 [![codecov](https://codecov.io/gh/zhuzx17/gocan/branch/main/graph/badge.svg)](https://codecov.io/gh/zhuzx17/gocan)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`gocan` 提供统一的 Go `Bus` API，让程序能在 Windows PCANBasic、串口
-CANable 2.0 SLCAN-FD 和 Linux SocketCAN 之间复用同一套 CAN / CAN FD 收发逻辑。
+`gocan` 提供统一的 Go `Bus` API，让程序能在 Windows PCANBasic、CANable 2.0
+SLCAN-FD、MiniCANFD 动态库和 Linux SocketCAN 之间复用同一套 CAN / CAN FD 收发逻辑。
 Windows PCAN 后端用纯 Go（`syscall` 调用，无 CGO）封装 `PCANBasic.dll`；SLCAN
 后端直接打开 `COMx`；Linux 后端使用内核 SocketCAN。
 
@@ -40,6 +40,7 @@ Linux 可走 SocketCAN 或 SLCAN，上层业务尽量只依赖统一的 `Bus` / 
 - ✅ 错误处理：位掩码语义 + `errors.Is` 哨兵
 - ✅ Linux SocketCAN 后端：`Open(SocketCAN("can0"))` / `OpenFD(SocketCAN("vcan0"), "")` / `SetFilter`
 - ✅ CANable 2.0 SLCAN-FD：`OpenSLCAN("COM5", ...)` / `OpenSLCANFD("COM5", ...)`
+- ✅ MiniCANFD 厂商动态库：`LookupMiniCANFDDevices` / `OpenMiniCANFD`
 - ✅ SLCAN 多通道合流：`BusGroup.AddSLCAN` / `BusGroup.AddSLCANFD`
 - ✅ 通道发现与设备信息：`LookupChannels()` / `GetDeviceInfo()`
 - ✅ 完整的中文文档与 15 个示例
@@ -99,6 +100,27 @@ Linux 上 bitrate 由系统配置，不由 `WithBitrate` 设置，例如：
 sudo ip link set can0 type can bitrate 500000
 sudo ip link set can0 up
 ```
+
+## MiniCANFD 厂商动态库
+
+MiniCANFD 是 USB-CANFD 适配器后端，不会创建 `canN` 网卡，也不负责识别
+L30/O20；上层仍可复用自己的 CAN FD 协议识别逻辑。Linux 使用 `libcanbus.so`
+（aarch64 可使用 `libcanbus_arm64.so`），Windows amd64 使用 `HCanbus.dll`。
+
+```go
+devices, err := gocan.LookupMiniCANFDDevices("")
+if err != nil {
+    log.Fatal(err)
+}
+bus, err := gocan.OpenMiniCANFD(gocan.MiniCANFDConfig{
+    DeviceIndex: devices[0].Index,
+    Channel:     0,
+    LibraryPath: os.Getenv("MINICANFD_LIBRARY_PATH"),
+})
+```
+
+库路径也可通过 `MINICANFD_LIBRARY_PATH` 或 `LINKERBOT_CANFD_LIB` 指定。厂商
+二进制不随 gocan 发布包提供，需由应用按目标平台分发。
 
 ## CANable 2.0 SLCAN-FD
 

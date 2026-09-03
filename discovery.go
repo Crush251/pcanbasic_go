@@ -10,6 +10,8 @@ const (
 	BackendSocketCAN ChannelBackend = "socketcan"
 	// BackendSLCAN 表示串口 SLCAN / CANable 2.0 SLCAN-FD 后端。
 	BackendSLCAN ChannelBackend = "slcan"
+	// BackendMiniCANFD 表示 MiniCANFD 厂商动态库后端。
+	BackendMiniCANFD ChannelBackend = "minicanfd"
 )
 
 // ChannelInfo 描述一个可尝试打开的 CAN/CAN FD 通道。
